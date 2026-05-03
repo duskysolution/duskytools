@@ -1,88 +1,185 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import json
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+import asyncio
 import uuid
-from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Optional
+from datetime import datetime
 
+from tools import TOOL_REGISTRY, TMP_DIR, cleanup_old_files
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+# MongoDB (optional - kept for future features)
+mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ.get("DB_NAME", "duskypdf")]
 
-# Create the main app without a prefix
-app = FastAPI()
-
-# Create a router with the /api prefix
+app = FastAPI(title="DuskyPDF API")
 api_router = APIRouter(prefix="/api")
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+# ---------- Helpers ----------
+def _save_upload(file: UploadFile) -> str:
+    ext = Path(file.filename).suffix.lower() or ".bin"
+    path = TMP_DIR / f"in_{uuid.uuid4().hex}{ext}"
+    with open(path, "wb") as fp:
+        while True:
+            chunk = file.file.read(1024 * 1024)
+            if not chunk:
+                break
+            fp.write(chunk)
+    return str(path)
 
-# Add your routes to the router instead of directly to app
+
+def _mime_for(ext: str) -> str:
+    return {
+        "pdf": "application/pdf",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "zip": "application/zip",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }.get(ext.lower(), "application/octet-stream")
+
+
+# ---------- Routes ----------
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "DuskyPDF API", "tools": list(TOOL_REGISTRY.keys())}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+@api_router.get("/tools")
+async def list_tools():
+    return {"tools": list(TOOL_REGISTRY.keys())}
 
-# Include the router in the main app
+
+@api_router.post("/tools/{slug}/process")
+async def process_tool(
+    slug: str,
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    options: Optional[str] = Form("{}"),
+):
+    if slug not in TOOL_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Tool '{slug}' not implemented")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    # Parse options
+    try:
+        opts = json.loads(options or "{}")
+    except json.JSONDecodeError:
+        opts = {}
+
+    # Save uploads
+    saved_paths = []
+    try:
+        for f in files:
+            saved_paths.append(_save_upload(f))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to save upload: {e}")
+
+    # Run tool (offload blocking work)
+    try:
+        loop = asyncio.get_event_loop()
+        out_path = await loop.run_in_executor(
+            None, lambda: TOOL_REGISTRY[slug](saved_paths, opts)
+        )
+    except pikepdf_password_error() as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Tool processing failed")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {e}")
+    finally:
+        # Delete input files after processing
+        for p in saved_paths:
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+
+    out_path = Path(out_path)
+    token = out_path.name  # uuid.ext
+    ext = out_path.suffix.lstrip(".")
+    # Derive a nice filename
+    base = files[0].filename.rsplit(".", 1)[0] if files[0].filename else "duskypdf"
+    nice = f"duskypdf_{slug}_{base}.{ext}"
+
+    # Schedule cleanup
+    background_tasks.add_task(cleanup_old_files, 3600)
+
+    return JSONResponse({
+        "success": True,
+        "token": token,
+        "download_url": f"/api/download/{token}",
+        "filename": nice,
+        "size": out_path.stat().st_size,
+        "mime": _mime_for(ext),
+    })
+
+
+@api_router.get("/download/{token}")
+async def download(token: str, filename: Optional[str] = None):
+    # Sanitize token
+    if "/" in token or ".." in token:
+        raise HTTPException(status_code=400, detail="Invalid token")
+    path = TMP_DIR / token
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File expired or not found")
+    ext = path.suffix.lstrip(".")
+    return FileResponse(
+        path=str(path),
+        media_type=_mime_for(ext),
+        filename=filename or f"duskypdf.{ext}",
+    )
+
+
+def pikepdf_password_error():
+    # Lazy import so server can start even if pikepdf missing
+    try:
+        import pikepdf
+        return pikepdf.PasswordError
+    except Exception:
+        return Exception
+
+
+# Include router
 app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+
+# ---------- Periodic cleanup ----------
+@app.on_event("startup")
+async def startup_event():
+    async def periodic_cleanup():
+        while True:
+            try:
+                cleanup_old_files(3600)
+            except Exception as e:
+                logger.warning(f"Cleanup failed: {e}")
+            await asyncio.sleep(600)  # every 10 min
+
+    asyncio.create_task(periodic_cleanup())
+    logger.info("DuskyPDF API started. Cleanup scheduler running.")
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
