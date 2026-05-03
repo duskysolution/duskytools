@@ -3,7 +3,13 @@ import { Link } from 'react-router-dom';
 import { ArrowRight, CheckCircle2, ShieldCheck, Zap, Smartphone } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
+import Seo from '../components/Seo';
 import { TOOLS, FEATURES } from '../mock';
+
+/**
+ * Home — DuskyPDF landing page.
+ * Renders hero + categorized tool grid + features + CTA + SEO meta.
+ */
 
 const ToolCard = ({ tool }) => {
   const Icon = tool.icon;
@@ -30,17 +36,50 @@ const iconMap = { Zap, ShieldCheck, Smartphone, CheckCircle2 };
 
 export default function Home() {
   const categorized = [
-    { title: 'Organize PDF', slugs: ['merge-pdf','split-pdf','organize-pdf','rotate-pdf'] },
-    { title: 'Optimize PDF', slugs: ['compress-pdf','repair-pdf','ocr-pdf'] },
-    { title: 'Convert to PDF', slugs: ['jpg-to-pdf','word-to-pdf','powerpoint-to-pdf','excel-to-pdf','html-to-pdf'] },
-    { title: 'Convert from PDF', slugs: ['pdf-to-jpg','pdf-to-word','pdf-to-powerpoint','pdf-to-excel','pdf-to-pdfa'] },
+    { title: 'Organize PDF', slugs: ['merge-pdf','split-pdf','organize-pdf','rotate-pdf','remove-pages','extract-pages','n-up-pdf'] },
+    { title: 'Optimize PDF', slugs: ['compress-pdf','grayscale-pdf','repair-pdf','ocr-pdf','pdf-info'] },
+    { title: 'Convert to PDF', slugs: ['jpg-to-pdf','word-to-pdf','powerpoint-to-pdf','excel-to-pdf','html-to-pdf','text-to-pdf'] },
+    { title: 'Convert from PDF', slugs: ['pdf-to-jpg','pdf-to-word','pdf-to-powerpoint','pdf-to-excel','pdf-to-text','extract-images'] },
     { title: 'Edit PDF', slugs: ['edit-pdf','page-numbers','watermark','crop-pdf'] },
     { title: 'PDF security', slugs: ['unlock-pdf','protect-pdf','sign-pdf','redact-pdf','compare-pdf'] },
   ];
   const bySlug = Object.fromEntries(TOOLS.map(t => [t.slug, t]));
 
+  // Schema.org structured data: WebSite + ItemList of all tools
+  const jsonLd = [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'WebSite',
+      name: 'DuskyPDF',
+      url: 'https://duskypdf.com',
+      description: 'Every tool you need to work with PDFs in one place. 26+ free online PDF tools.',
+      potentialAction: {
+        '@type': 'SearchAction',
+        target: 'https://duskypdf.com/?q={search_term_string}',
+        'query-input': 'required name=search_term_string',
+      },
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'ItemList',
+      itemListElement: TOOLS.slice(0, 30).map((t, i) => ({
+        '@type': 'ListItem', position: i + 1,
+        name: t.name,
+        url: `https://duskypdf.com/${t.slug}`,
+        description: t.short,
+      })),
+    },
+  ];
+
   return (
     <div className="min-h-screen bg-[#FAFAFC]">
+      <Seo
+        title="DuskyPDF — Every tool you need to work with PDFs in one place"
+        description="DuskyPDF — 26+ free online PDF tools. Merge, split, compress, convert, edit, sign and OCR your PDFs. Fast, simple, no signup."
+        keywords="PDF tools, merge PDF, split PDF, compress PDF, PDF to Word, PDF to JPG, edit PDF, sign PDF, online PDF, free PDF tools"
+        canonical="https://duskypdf.com/"
+        jsonLd={jsonLd}
+      />
       <Header />
 
       {/* Hero */}
@@ -51,7 +90,7 @@ export default function Home() {
 
         <div className="relative max-w-[1200px] mx-auto px-4 sm:px-6 pt-16 pb-12 text-center">
           <span className="inline-flex items-center gap-2 text-xs font-semibold tracking-wider uppercase text-[#C73E3A] bg-[#C73E3A]/10 px-3 py-1.5 rounded-full">
-            <Zap className="w-3.5 h-3.5" /> 25+ PDF tools, one home
+            <Zap className="w-3.5 h-3.5" /> 30+ PDF tools, one home
           </span>
           <h1 className="mt-5 text-4xl md:text-6xl font-extrabold tracking-tight text-slate-900 leading-[1.05]">
             Every tool you need <br className="hidden md:block" />

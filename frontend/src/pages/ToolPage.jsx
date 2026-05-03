@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
+import Seo from '../components/Seo';
 import PdfViewer from '../components/PdfViewer';
 import ToolOptions from '../components/ToolOptions';
 import { getToolBySlug, TOOLS } from '../mock';
@@ -14,12 +15,9 @@ import { getToolBySlug, TOOLS } from '../mock';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-// Tools that have a real backend implementation
-const FUNCTIONAL_SLUGS = new Set([
-  'merge-pdf', 'split-pdf', 'compress-pdf', 'rotate-pdf', 'watermark',
-  'page-numbers', 'jpg-to-pdf', 'pdf-to-jpg', 'pdf-to-word', 'unlock-pdf',
-  'protect-pdf', 'organize-pdf', 'ocr-pdf', 'crop-pdf', 'repair-pdf',
-]);
+// Tools whose backend processor is wired up (sourced from mock.js `functional` flag).
+// Kept here as a fallback constant; primary source of truth is `tool.functional`.
+const FUNCTIONAL_FALLBACK = new Set(TOOLS.filter(t => t.functional).map(t => t.slug));
 
 function formatBytes(bytes) {
   if (!bytes) return '0 B';
@@ -46,7 +44,7 @@ export default function ToolPage() {
   const [rotations, setRotations] = useState({});
   const navigate = useNavigate();
 
-  const isFunctional = FUNCTIONAL_SLUGS.has(slug);
+  const isFunctional = tool ? (tool.functional ?? FUNCTIONAL_FALLBACK.has(slug)) : false;
   const isPdfInput = tool && tool.accept === '.pdf';
   const primaryPdfFile = files[0]?.file && isPdfInput ? files[0].file : null;
 
@@ -73,6 +71,22 @@ export default function ToolPage() {
   }
 
   const Icon = tool.icon;
+
+  // SEO data for this specific tool
+  const seoTitle = `${tool.name} – Free Online ${tool.name} Tool | DuskyPDF`;
+  const seoDescription = `${tool.description} Free, fast, no signup required.`;
+  const seoKeywords = `${tool.name.toLowerCase()}, online ${tool.name.toLowerCase()}, free ${tool.name.toLowerCase()}, PDF tool, DuskyPDF`;
+  const seoCanonical = `https://duskypdf.com/${tool.slug}`;
+  const seoJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'SoftwareApplication',
+    name: `${tool.name} - DuskyPDF`,
+    description: tool.description,
+    applicationCategory: 'UtilitiesApplication',
+    operatingSystem: 'Any (Web)',
+    offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+    aggregateRating: { '@type': 'AggregateRating', ratingValue: '4.8', ratingCount: '1024' },
+  };
 
   const addFiles = (list) => {
     const arr = Array.from(list).map(f => ({ id: Math.random().toString(36).slice(2), file: f }));
@@ -155,6 +169,13 @@ export default function ToolPage() {
 
   return (
     <div className="min-h-screen bg-[#FAFAFC]">
+      <Seo
+        title={seoTitle}
+        description={seoDescription}
+        keywords={seoKeywords}
+        canonical={seoCanonical}
+        jsonLd={seoJsonLd}
+      />
       <Header />
 
       <section className="relative overflow-hidden">

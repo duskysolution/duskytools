@@ -116,6 +116,9 @@ backend:
       - working: true
         agent: "testing"
         comment: "GET /api/ endpoint working correctly. Returns message and lists all 15 tools available."
+      - working: true
+        agent: "testing"
+        comment: "QA Round 2: GET /api/ endpoint verified. Returns tool_count=26 and lists all 26 tools correctly."
 
   - task: "Tools Listing Endpoint"
     implemented: true
@@ -312,6 +315,175 @@ backend:
         agent: "testing"
         comment: "POST /api/tools/ocr-pdf/process working correctly. Successfully performed OCR on 1-page PDF in 1.4s (under 60s timeout)."
 
+  - task: "Remove Pages Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/remove-pages/process working correctly. Successfully removed pages 2,4 from 5-page PDF, resulting in 3-page PDF. Download URL works, correct MIME type."
+
+  - task: "Extract Pages Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/extract-pages/process working correctly. Successfully extracted pages 1-2,5 from 5-page PDF, resulting in 3-page PDF. Download URL works, correct MIME type."
+
+  - task: "N-up PDF Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/n-up-pdf/process working correctly. Successfully created 2-up layout from 4-page PDF with n=2 option. Download URL works, correct MIME type."
+
+  - task: "Grayscale PDF Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/grayscale-pdf/process working correctly. Successfully converted PDF to grayscale with dpi=150 option. Download URL works, correct MIME type."
+
+  - task: "PDF Info Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/pdf-info/process working correctly. Successfully generated .txt metadata report with page count, dimensions, and metadata. Download URL works, correct MIME type (text/plain)."
+
+  - task: "Sign PDF Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/sign-pdf/process working correctly. Successfully added signature 'John Doe' at bottom-right position on last page. Download URL works, correct MIME type."
+
+  - task: "Edit PDF Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/edit-pdf/process working correctly. Successfully added text 'Hello' at position (10%,10%) on page 1 with size 18 and color #ff0000. Download URL works, correct MIME type."
+
+  - task: "PDF to Text Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/pdf-to-text/process working correctly. Successfully extracted text from PDF to .txt file. Download URL works, correct MIME type (text/plain)."
+
+  - task: "Extract Images Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/extract-images/process working correctly. Successfully extracted embedded images from PDF to .zip file. Download URL works, correct MIME type (application/zip)."
+
+  - task: "Text to PDF Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/text-to-pdf/process working correctly. Successfully converted multi-paragraph .txt file to paginated PDF. Download URL works, correct MIME type."
+
+  - task: "HTML to PDF Tool"
+    implemented: true
+    working: true
+    file: "tools.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/tools/html-to-pdf/process working correctly. Successfully converted HTML file to PDF using PyMuPDF Story. Download URL works, correct MIME type."
+
+  - task: "Sitemap SEO Endpoint"
+    implemented: true
+    working: true
+    file: "server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/sitemap.xml working correctly. Returns 200, content-type application/xml, contains <urlset> and 27 <url> blocks (homepage + 26 tools)."
+
+  - task: "Robots.txt SEO Endpoint"
+    implemented: true
+    working: true
+    file: "server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/robots.txt working correctly. Returns 200, content-type text/plain, contains 'User-agent: *' and 'Sitemap:' line."
+
+  - task: "Ads.txt SEO Endpoint"
+    implemented: true
+    working: true
+    file: "server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/ads.txt working correctly. Returns 200, content-type text/plain, contains 'pub-DUSKYTEST01' placeholder."
+
+
   - task: "Download Endpoint"
     implemented: true
     working: true
@@ -342,7 +514,7 @@ frontend:
 metadata:
   created_by: "testing_agent"
   version: "1.0"
-  test_sequence: 1
+  test_sequence: 2
   run_ui: false
 
 test_plan:
@@ -354,3 +526,5 @@ test_plan:
 agent_communication:
   - agent: "testing"
     message: "Comprehensive backend testing completed. All 21 tests passed including all 15 PDF processing tools, endpoints, and error conditions. Fixed watermark tool rotate parameter issue. All tools working correctly with proper file generation, download, and error handling."
+  - agent: "testing"
+    message: "QA Round 2 completed successfully. Tested 11 new PDF tools (remove-pages, extract-pages, n-up-pdf, grayscale-pdf, pdf-info, sign-pdf, edit-pdf, pdf-to-text, extract-images, text-to-pdf, html-to-pdf) + 3 SEO endpoints (sitemap.xml, robots.txt, ads.txt) + health endpoint. All 15 tests PASSED. Health endpoint correctly reports tool_count=26. All tools process files correctly, return proper MIME types, and download URLs work. Backend is fully functional with all 26 tools operational."

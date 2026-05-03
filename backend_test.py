@@ -1,554 +1,390 @@
 #!/usr/bin/env python3
 """
-DuskyPDF Backend API Test Suite
-Tests all PDF processing tools end-to-end
+DuskyPDF Backend QA Round 2 - Test Script
+Tests 11 new PDF tools + SEO endpoints + health check
 """
-
-import requests
-import json
-import time
-import tempfile
+import io
 import os
-from pathlib import Path
-from typing import Dict, Any, Optional
-import pypdf
-from PIL import Image
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+import sys
+import json
 import zipfile
+import requests
+from pathlib import Path
+from PIL import Image
+import fitz  # PyMuPDF for generating test PDFs
 
-# Backend URL from frontend/.env
-BACKEND_URL = "https://format-hub-14.preview.emergentagent.com"
+# Backend URL from environment
+BACKEND_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://format-hub-14.preview.emergentagent.com")
 API_BASE = f"{BACKEND_URL}/api"
 
-class DuskyPDFTester:
-    def __init__(self):
-        self.session = requests.Session()
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.test_results = []
+# Test results tracking
+results = {
+    "passed": [],
+    "failed": [],
+    "total": 0
+}
+
+def log(msg, level="INFO"):
+    """Simple logging"""
+    print(f"[{level}] {msg}")
+
+def generate_test_pdf(pages=5, with_text=True, with_image=False):
+    """Generate a test PDF with specified number of pages"""
+    doc = fitz.open()
+    for i in range(pages):
+        page = doc.new_page(width=595, height=842)  # A4
+        if with_text:
+            page.insert_text((50, 50), f"Page {i+1} of {pages}", fontsize=20)
+            page.insert_text((50, 100), f"This is test content on page {i+1}.", fontsize=12)
+        if with_image and i == 0:
+            # Insert a small test image on first page
+            img = Image.new('RGB', (100, 100), color='red')
+            img_bytes = io.BytesIO()
+            img.save(img_bytes, format='JPEG')
+            img_bytes.seek(0)
+            page.insert_image(fitz.Rect(100, 200, 200, 300), stream=img_bytes.getvalue())
+    
+    pdf_bytes = doc.tobytes()
+    doc.close()
+    return pdf_bytes
+
+def test_tool(slug, files_data, options=None, expected_mime=None, expected_ext=None):
+    """
+    Test a PDF tool endpoint
+    files_data: list of tuples (filename, bytes, mime)
+    options: dict of options
+    expected_mime: expected MIME type of result
+    expected_ext: expected file extension
+    """
+    results["total"] += 1
+    test_name = f"Tool: {slug}"
+    
+    try:
+        log(f"Testing {slug}...")
         
-    def log_result(self, test_name: str, success: bool, details: str = ""):
-        """Log test result"""
-        status = "✅ PASS" if success else "❌ FAIL"
-        print(f"{status} {test_name}: {details}")
-        self.test_results.append({
-            "test": test_name,
-            "success": success,
-            "details": details
-        })
+        # Prepare multipart form data
+        files = []
+        for i, (fname, fbytes, fmime) in enumerate(files_data):
+            files.append(('files', (fname, io.BytesIO(fbytes), fmime)))
         
-    def create_sample_pdf(self, pages: int = 3, filename: str = "sample.pdf") -> Path:
-        """Create a sample PDF with specified number of pages"""
-        pdf_path = self.temp_dir / filename
-        c = canvas.Canvas(str(pdf_path), pagesize=letter)
+        data = {}
+        if options:
+            data['options'] = json.dumps(options)
         
-        for i in range(pages):
-            c.drawString(100, 750, f"This is page {i+1} of {pages}")
-            c.drawString(100, 700, f"Sample content for testing DuskyPDF")
-            c.drawString(100, 650, f"Page created at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-            if i < pages - 1:
-                c.showPage()
+        # POST to tool endpoint
+        url = f"{API_BASE}/tools/{slug}/process"
+        resp = requests.post(url, files=files, data=data, timeout=60)
         
-        c.save()
-        return pdf_path
-        
-    def create_sample_jpg(self, filename: str = "sample.jpg") -> Path:
-        """Create a sample JPG image"""
-        jpg_path = self.temp_dir / filename
-        img = Image.new('RGB', (800, 600), color='lightblue')
-        img.save(jpg_path, 'JPEG')
-        return jpg_path
-        
-    def verify_pdf_pages(self, pdf_path: Path, expected_pages: int) -> bool:
-        """Verify PDF has expected number of pages"""
-        try:
-            reader = pypdf.PdfReader(str(pdf_path))
-            actual_pages = len(reader.pages)
-            return actual_pages == expected_pages
-        except Exception as e:
-            print(f"Error reading PDF: {e}")
+        if resp.status_code != 200:
+            results["failed"].append(f"{test_name}: HTTP {resp.status_code} - {resp.text[:200]}")
+            log(f"FAILED {slug}: HTTP {resp.status_code}", "ERROR")
             return False
-            
-    def test_health_endpoint(self):
-        """Test GET /api/ health endpoint"""
-        try:
-            response = self.session.get(f"{API_BASE}/")
-            if response.status_code == 200:
-                data = response.json()
-                if "message" in data and "tools" in data:
-                    tools = data["tools"]
-                    expected_tools = [
-                        "merge-pdf", "split-pdf", "compress-pdf", "rotate-pdf", 
-                        "watermark", "page-numbers", "jpg-to-pdf", "pdf-to-jpg",
-                        "pdf-to-word", "unlock-pdf", "protect-pdf", "organize-pdf",
-                        "crop-pdf", "repair-pdf", "ocr-pdf"
-                    ]
-                    missing_tools = [t for t in expected_tools if t not in tools]
-                    if not missing_tools:
-                        self.log_result("Health Endpoint", True, f"All {len(tools)} tools available")
-                        return True
-                    else:
-                        self.log_result("Health Endpoint", False, f"Missing tools: {missing_tools}")
-                        return False
-                else:
-                    self.log_result("Health Endpoint", False, "Invalid response format")
-                    return False
-            else:
-                self.log_result("Health Endpoint", False, f"HTTP {response.status_code}")
+        
+        result = resp.json()
+        
+        # Check response structure
+        if not result.get("success"):
+            results["failed"].append(f"{test_name}: success=false")
+            log(f"FAILED {slug}: success=false", "ERROR")
+            return False
+        
+        if "download_url" not in result:
+            results["failed"].append(f"{test_name}: missing download_url")
+            log(f"FAILED {slug}: missing download_url", "ERROR")
+            return False
+        
+        # Check file size
+        if result.get("size", 0) <= 0:
+            results["failed"].append(f"{test_name}: file size is 0")
+            log(f"FAILED {slug}: file size is 0", "ERROR")
+            return False
+        
+        # Verify download URL works
+        download_url = f"{BACKEND_URL}{result['download_url']}" if result['download_url'].startswith('/') else result['download_url']
+        log(f"  Download URL: {download_url}")
+        log(f"  Token: {result.get('token')}")
+        dl_resp = requests.get(download_url, timeout=30)
+        
+        if dl_resp.status_code != 200:
+            results["failed"].append(f"{test_name}: download failed HTTP {dl_resp.status_code} - URL: {download_url}")
+            log(f"FAILED {slug}: download failed HTTP {dl_resp.status_code}", "ERROR")
+            log(f"  Response: {dl_resp.text[:200]}", "ERROR")
+            return False
+        
+        # Check MIME type if specified
+        if expected_mime:
+            content_type = dl_resp.headers.get('content-type', '').split(';')[0].strip()
+            if expected_mime not in content_type:
+                results["failed"].append(f"{test_name}: expected MIME {expected_mime}, got {content_type}")
+                log(f"FAILED {slug}: wrong MIME type", "ERROR")
                 return False
-        except Exception as e:
-            self.log_result("Health Endpoint", False, f"Exception: {e}")
-            return False
-            
-    def test_tools_endpoint(self):
-        """Test GET /api/tools endpoint"""
-        try:
-            response = self.session.get(f"{API_BASE}/tools")
-            if response.status_code == 200:
-                data = response.json()
-                if "tools" in data and len(data["tools"]) >= 15:
-                    self.log_result("Tools Endpoint", True, f"{len(data['tools'])} tools listed")
-                    return True
-                else:
-                    self.log_result("Tools Endpoint", False, "Invalid tools response")
-                    return False
-            else:
-                self.log_result("Tools Endpoint", False, f"HTTP {response.status_code}")
-                return False
-        except Exception as e:
-            self.log_result("Tools Endpoint", False, f"Exception: {e}")
-            return False
-            
-    def process_tool(self, slug: str, files: list, options: Dict[str, Any] = None) -> Optional[Dict]:
-        """Process a tool and return response data"""
-        try:
-            files_data = []
-            for file_path in files:
-                files_data.append(('files', (file_path.name, open(file_path, 'rb'))))
-                
-            data = {'options': json.dumps(options or {})}
-            
-            response = self.session.post(
-                f"{API_BASE}/tools/{slug}/process",
-                files=files_data,
-                data=data
-            )
-            
-            # Close file handles
-            for _, (_, file_handle) in files_data:
-                file_handle.close()
-                
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Tool {slug} failed with HTTP {response.status_code}: {response.text}")
-                return None
-                
-        except Exception as e:
-            print(f"Tool {slug} exception: {e}")
-            return None
-            
-    def download_file(self, token: str, expected_type: str = "pdf") -> Optional[Path]:
-        """Download file using token"""
-        try:
-            response = self.session.get(f"{API_BASE}/download/{token}")
-            if response.status_code == 200:
-                ext = "pdf" if expected_type == "application/pdf" else \
-                      "zip" if expected_type == "application/zip" else \
-                      "jpg" if expected_type == "image/jpeg" else \
-                      "docx" if expected_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" else "bin"
-                      
-                download_path = self.temp_dir / f"download_{token}.{ext}"
-                with open(download_path, 'wb') as f:
-                    f.write(response.content)
-                return download_path
-            else:
-                print(f"Download failed with HTTP {response.status_code}")
-                return None
-        except Exception as e:
-            print(f"Download exception: {e}")
-            return None
-            
-    def test_merge_pdf(self):
-        """Test merge-pdf tool"""
-        pdf1 = self.create_sample_pdf(3, "merge1.pdf")
-        pdf2 = self.create_sample_pdf(3, "merge2.pdf")
         
-        result = self.process_tool("merge-pdf", [pdf1, pdf2])
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and self.verify_pdf_pages(download_path, 6):
-                self.log_result("Merge PDF", True, "6 pages merged successfully")
-                return True
-                
-        self.log_result("Merge PDF", False, "Failed to merge or verify pages")
+        # Check file extension if specified
+        if expected_ext:
+            if not result.get("filename", "").endswith(expected_ext):
+                results["failed"].append(f"{test_name}: expected ext {expected_ext}, got {result.get('filename')}")
+                log(f"FAILED {slug}: wrong file extension", "ERROR")
+                return False
+        
+        # Verify downloaded content size
+        if len(dl_resp.content) == 0:
+            results["failed"].append(f"{test_name}: downloaded file is empty")
+            log(f"FAILED {slug}: downloaded file is empty", "ERROR")
+            return False
+        
+        results["passed"].append(test_name)
+        log(f"PASSED {slug}", "SUCCESS")
+        return True
+        
+    except Exception as e:
+        results["failed"].append(f"{test_name}: Exception - {str(e)}")
+        log(f"FAILED {slug}: {str(e)}", "ERROR")
         return False
+
+def test_seo_endpoints():
+    """Test SEO endpoints: sitemap.xml, robots.txt, ads.txt"""
+    
+    # Test sitemap.xml
+    results["total"] += 1
+    try:
+        log("Testing GET /api/sitemap.xml...")
+        resp = requests.get(f"{API_BASE}/sitemap.xml", timeout=10)
         
-    def test_split_pdf(self):
-        """Test split-pdf tool with ranges and each mode"""
-        pdf = self.create_sample_pdf(3, "split.pdf")
-        
-        # Test ranges mode
-        result = self.process_tool("split-pdf", [pdf], {"mode": "ranges", "ranges": "1-2"})
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and self.verify_pdf_pages(download_path, 2):
-                self.log_result("Split PDF (ranges)", True, "2 pages extracted")
-            else:
-                self.log_result("Split PDF (ranges)", False, "Failed to verify split result")
-                return False
+        if resp.status_code != 200:
+            results["failed"].append(f"sitemap.xml: HTTP {resp.status_code}")
+            log("FAILED sitemap.xml: wrong status code", "ERROR")
+        elif 'application/xml' not in resp.headers.get('content-type', ''):
+            results["failed"].append(f"sitemap.xml: wrong content-type {resp.headers.get('content-type')}")
+            log("FAILED sitemap.xml: wrong content-type", "ERROR")
+        elif '<urlset' not in resp.text:
+            results["failed"].append("sitemap.xml: missing <urlset>")
+            log("FAILED sitemap.xml: missing <urlset>", "ERROR")
+        elif resp.text.count('<url>') < 26:
+            results["failed"].append(f"sitemap.xml: only {resp.text.count('<url>')} URLs, expected at least 26")
+            log(f"FAILED sitemap.xml: only {resp.text.count('<url>')} URLs", "ERROR")
         else:
-            self.log_result("Split PDF (ranges)", False, "Failed to split")
-            return False
-            
-        # Test each mode (should return zip)
-        result = self.process_tool("split-pdf", [pdf], {"mode": "each"})
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"], "application/zip")
-            if download_path and download_path.suffix == ".zip":
-                self.log_result("Split PDF (each)", True, "ZIP file created")
-                return True
-            else:
-                self.log_result("Split PDF (each)", False, "Failed to create ZIP")
-                return False
+            results["passed"].append("SEO: sitemap.xml")
+            log("PASSED sitemap.xml", "SUCCESS")
+    except Exception as e:
+        results["failed"].append(f"sitemap.xml: Exception - {str(e)}")
+        log(f"FAILED sitemap.xml: {str(e)}", "ERROR")
+    
+    # Test robots.txt
+    results["total"] += 1
+    try:
+        log("Testing GET /api/robots.txt...")
+        resp = requests.get(f"{API_BASE}/robots.txt", timeout=10)
+        
+        if resp.status_code != 200:
+            results["failed"].append(f"robots.txt: HTTP {resp.status_code}")
+            log("FAILED robots.txt: wrong status code", "ERROR")
+        elif 'text/plain' not in resp.headers.get('content-type', ''):
+            results["failed"].append(f"robots.txt: wrong content-type {resp.headers.get('content-type')}")
+            log("FAILED robots.txt: wrong content-type", "ERROR")
+        elif 'User-agent: *' not in resp.text:
+            results["failed"].append("robots.txt: missing 'User-agent: *'")
+            log("FAILED robots.txt: missing User-agent", "ERROR")
+        elif 'Sitemap:' not in resp.text:
+            results["failed"].append("robots.txt: missing 'Sitemap:' line")
+            log("FAILED robots.txt: missing Sitemap line", "ERROR")
         else:
-            self.log_result("Split PDF (each)", False, "Failed to split each")
-            return False
-            
-    def test_compress_pdf(self):
-        """Test compress-pdf tool"""
-        pdf = self.create_sample_pdf(3, "compress.pdf")
+            results["passed"].append("SEO: robots.txt")
+            log("PASSED robots.txt", "SUCCESS")
+    except Exception as e:
+        results["failed"].append(f"robots.txt: Exception - {str(e)}")
+        log(f"FAILED robots.txt: {str(e)}", "ERROR")
+    
+    # Test ads.txt
+    results["total"] += 1
+    try:
+        log("Testing GET /api/ads.txt...")
+        resp = requests.get(f"{API_BASE}/ads.txt", timeout=10)
         
-        result = self.process_tool("compress-pdf", [pdf], {"level": "recommended"})
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and download_path.exists():
-                self.log_result("Compress PDF", True, f"Compressed to {result.get('size', 0)} bytes")
-                return True
-                
-        self.log_result("Compress PDF", False, "Failed to compress")
-        return False
-        
-    def test_rotate_pdf(self):
-        """Test rotate-pdf tool"""
-        pdf = self.create_sample_pdf(3, "rotate.pdf")
-        
-        result = self.process_tool("rotate-pdf", [pdf], {"degrees": 90, "pages": "all"})
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and download_path.exists():
-                self.log_result("Rotate PDF", True, "PDF rotated 90 degrees")
-                return True
-                
-        self.log_result("Rotate PDF", False, "Failed to rotate")
-        return False
-        
-    def test_watermark_pdf(self):
-        """Test watermark tool"""
-        pdf = self.create_sample_pdf(3, "watermark.pdf")
-        
-        result = self.process_tool("watermark", [pdf], {"text": "TEST", "opacity": 0.3})
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and download_path.exists():
-                self.log_result("Watermark PDF", True, "Watermark applied")
-                return True
-                
-        self.log_result("Watermark PDF", False, "Failed to watermark")
-        return False
-        
-    def test_page_numbers_pdf(self):
-        """Test page-numbers tool"""
-        pdf = self.create_sample_pdf(3, "pagenums.pdf")
-        
-        result = self.process_tool("page-numbers", [pdf], {
-            "position": "bottom-center", 
-            "format": "Page {n} of {total}"
-        })
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and download_path.exists():
-                self.log_result("Page Numbers PDF", True, "Page numbers added")
-                return True
-                
-        self.log_result("Page Numbers PDF", False, "Failed to add page numbers")
-        return False
-        
-    def test_jpg_to_pdf(self):
-        """Test jpg-to-pdf tool"""
-        jpg1 = self.create_sample_jpg("img1.jpg")
-        jpg2 = self.create_sample_jpg("img2.jpg")
-        
-        result = self.process_tool("jpg-to-pdf", [jpg1, jpg2])
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and self.verify_pdf_pages(download_path, 2):
-                self.log_result("JPG to PDF", True, "2 images converted to PDF")
-                return True
-                
-        self.log_result("JPG to PDF", False, "Failed to convert images")
-        return False
-        
-    def test_pdf_to_jpg(self):
-        """Test pdf-to-jpg tool"""
-        pdf = self.create_sample_pdf(3, "tojpg.pdf")
-        
-        result = self.process_tool("pdf-to-jpg", [pdf], {"dpi": 150})
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"], "application/zip")
-            if download_path and download_path.suffix == ".zip":
-                self.log_result("PDF to JPG", True, "PDF converted to JPG images")
-                return True
-                
-        self.log_result("PDF to JPG", False, "Failed to convert to JPG")
-        return False
-        
-    def test_protect_unlock_pdf(self):
-        """Test protect-pdf and unlock-pdf tools"""
-        pdf = self.create_sample_pdf(3, "protect.pdf")
-        password = "test123"
-        
-        # First protect the PDF
-        result = self.process_tool("protect-pdf", [pdf], {"password": password})
-        if not (result and result.get("success")):
-            self.log_result("Protect PDF", False, "Failed to protect PDF")
-            return False
-            
-        protected_path = self.download_file(result["token"])
-        if not protected_path:
-            self.log_result("Protect PDF", False, "Failed to download protected PDF")
-            return False
-            
-        self.log_result("Protect PDF", True, "PDF protected with password")
-        
-        # Now unlock the protected PDF
-        result = self.process_tool("unlock-pdf", [protected_path], {"password": password})
-        if result and result.get("success"):
-            unlocked_path = self.download_file(result["token"])
-            if unlocked_path and unlocked_path.exists():
-                self.log_result("Unlock PDF", True, "PDF unlocked successfully")
-                return True
-                
-        self.log_result("Unlock PDF", False, "Failed to unlock PDF")
-        return False
-        
-    def test_organize_pdf(self):
-        """Test organize-pdf tool"""
-        pdf = self.create_sample_pdf(3, "organize.pdf")
-        
-        result = self.process_tool("organize-pdf", [pdf], {"page_order": [3, 1, 2]})
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and self.verify_pdf_pages(download_path, 3):
-                self.log_result("Organize PDF", True, "Pages reordered successfully")
-                return True
-                
-        self.log_result("Organize PDF", False, "Failed to organize pages")
-        return False
-        
-    def test_crop_pdf(self):
-        """Test crop-pdf tool"""
-        pdf = self.create_sample_pdf(3, "crop.pdf")
-        
-        result = self.process_tool("crop-pdf", [pdf], {
-            "top": 5, "right": 5, "bottom": 5, "left": 5
-        })
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and download_path.exists():
-                self.log_result("Crop PDF", True, "PDF cropped successfully")
-                return True
-                
-        self.log_result("Crop PDF", False, "Failed to crop PDF")
-        return False
-        
-    def test_repair_pdf(self):
-        """Test repair-pdf tool"""
-        pdf = self.create_sample_pdf(3, "repair.pdf")
-        
-        result = self.process_tool("repair-pdf", [pdf])
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and download_path.exists():
-                self.log_result("Repair PDF", True, "PDF repaired successfully")
-                return True
-                
-        self.log_result("Repair PDF", False, "Failed to repair PDF")
-        return False
-        
-    def test_pdf_to_word(self):
-        """Test pdf-to-word tool (with timeout)"""
-        pdf = self.create_sample_pdf(1, "toword.pdf")  # Use 1 page for speed
-        
-        start_time = time.time()
-        result = self.process_tool("pdf-to-word", [pdf])
-        elapsed = time.time() - start_time
-        
-        if elapsed > 60:
-            self.log_result("PDF to Word", False, f"Timeout after {elapsed:.1f}s")
-            return False
-            
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            if download_path and download_path.exists():
-                self.log_result("PDF to Word", True, f"Converted in {elapsed:.1f}s")
-                return True
-                
-        self.log_result("PDF to Word", False, "Failed to convert to Word")
-        return False
-        
-    def test_ocr_pdf(self):
-        """Test ocr-pdf tool (with timeout)"""
-        pdf = self.create_sample_pdf(1, "ocr.pdf")  # Use 1 page for speed
-        
-        start_time = time.time()
-        result = self.process_tool("ocr-pdf", [pdf])
-        elapsed = time.time() - start_time
-        
-        if elapsed > 60:
-            self.log_result("OCR PDF", False, f"Timeout after {elapsed:.1f}s")
-            return False
-            
-        if result and result.get("success"):
-            download_path = self.download_file(result["token"])
-            if download_path and download_path.exists():
-                self.log_result("OCR PDF", True, f"OCR completed in {elapsed:.1f}s")
-                return True
-                
-        self.log_result("OCR PDF", False, "Failed to perform OCR")
-        return False
-        
-    def test_error_conditions(self):
-        """Test error conditions"""
-        success_count = 0
-        
-        # Test nonexistent tool
-        try:
-            response = self.session.post(f"{API_BASE}/tools/nonexistent/process")
-            if response.status_code in [404, 422]:  # FastAPI returns 422 for path validation
-                self.log_result("Error: Nonexistent Tool", True, f"{response.status_code} returned correctly")
-                success_count += 1
-            else:
-                self.log_result("Error: Nonexistent Tool", False, f"Expected 404/422, got {response.status_code}")
-        except Exception as e:
-            self.log_result("Error: Nonexistent Tool", False, f"Exception: {e}")
-            
-        # Test no files
-        try:
-            response = self.session.post(
-                f"{API_BASE}/tools/merge-pdf/process",
-                data={'options': '{}'}
-            )
-            if response.status_code in [400, 422]:  # FastAPI returns 422 for validation errors
-                self.log_result("Error: No Files", True, f"{response.status_code} returned correctly")
-                success_count += 1
-            else:
-                self.log_result("Error: No Files", False, f"Expected 400/422, got {response.status_code}")
-        except Exception as e:
-            self.log_result("Error: No Files", False, f"Exception: {e}")
-            
-        # Test unlock with wrong password
-        pdf = self.create_sample_pdf(1, "wrongpass.pdf")
-        protect_result = self.process_tool("protect-pdf", [pdf], {"password": "correct123"})
-        if protect_result and protect_result.get("success"):
-            protected_path = self.download_file(protect_result["token"])
-            if protected_path:
-                unlock_result = self.process_tool("unlock-pdf", [protected_path], {"password": "wrong123"})
-                if not unlock_result or not unlock_result.get("success"):
-                    self.log_result("Error: Wrong Password", True, "Unlock failed as expected")
-                    success_count += 1
-                else:
-                    self.log_result("Error: Wrong Password", False, "Unlock should have failed")
-            else:
-                self.log_result("Error: Wrong Password", False, "Could not download protected PDF")
+        if resp.status_code != 200:
+            results["failed"].append(f"ads.txt: HTTP {resp.status_code}")
+            log("FAILED ads.txt: wrong status code", "ERROR")
+        elif 'text/plain' not in resp.headers.get('content-type', ''):
+            results["failed"].append(f"ads.txt: wrong content-type {resp.headers.get('content-type')}")
+            log("FAILED ads.txt: wrong content-type", "ERROR")
+        elif 'pub-DUSKYTEST01' not in resp.text:
+            results["failed"].append("ads.txt: missing 'pub-DUSKYTEST01'")
+            log("FAILED ads.txt: missing pub-DUSKYTEST01", "ERROR")
         else:
-            self.log_result("Error: Wrong Password", False, "Could not protect PDF for test")
-            
-        return success_count == 3
+            results["passed"].append("SEO: ads.txt")
+            log("PASSED ads.txt", "SUCCESS")
+    except Exception as e:
+        results["failed"].append(f"ads.txt: Exception - {str(e)}")
+        log(f"FAILED ads.txt: {str(e)}", "ERROR")
+
+def test_health_endpoint():
+    """Test health endpoint returns tool_count=26"""
+    results["total"] += 1
+    try:
+        log("Testing GET /api/ (health check)...")
+        resp = requests.get(f"{API_BASE}/", timeout=10)
         
-    def run_all_tests(self):
-        """Run all tests"""
-        print(f"🚀 Starting DuskyPDF Backend Tests")
-        print(f"📍 Backend URL: {BACKEND_URL}")
-        print(f"📁 Temp directory: {self.temp_dir}")
-        print("=" * 60)
+        if resp.status_code != 200:
+            results["failed"].append(f"Health endpoint: HTTP {resp.status_code}")
+            log("FAILED health endpoint: wrong status code", "ERROR")
+            return
         
-        # Basic endpoint tests
-        self.test_health_endpoint()
-        self.test_tools_endpoint()
+        data = resp.json()
         
-        # Core PDF processing tests
-        self.test_merge_pdf()
-        self.test_split_pdf()
-        self.test_compress_pdf()
-        self.test_rotate_pdf()
-        self.test_watermark_pdf()
-        self.test_page_numbers_pdf()
-        self.test_jpg_to_pdf()
-        self.test_pdf_to_jpg()
-        self.test_protect_unlock_pdf()
-        self.test_organize_pdf()
-        self.test_crop_pdf()
-        self.test_repair_pdf()
+        if data.get("tool_count") != 26:
+            results["failed"].append(f"Health endpoint: tool_count={data.get('tool_count')}, expected 26")
+            log(f"FAILED health endpoint: tool_count={data.get('tool_count')}", "ERROR")
+            return
         
-        # Potentially slow tests
-        print("\n⏱️  Testing potentially slow operations...")
-        self.test_pdf_to_word()
-        self.test_ocr_pdf()
+        if len(data.get("tools", [])) != 26:
+            results["failed"].append(f"Health endpoint: {len(data.get('tools', []))} tools listed, expected 26")
+            log(f"FAILED health endpoint: wrong tools count", "ERROR")
+            return
         
-        # Error condition tests
-        print("\n🚨 Testing error conditions...")
-        self.test_error_conditions()
+        results["passed"].append("Health endpoint: tool_count=26")
+        log("PASSED health endpoint", "SUCCESS")
         
-        # Summary
-        print("\n" + "=" * 60)
-        print("📊 TEST SUMMARY")
-        print("=" * 60)
-        
-        passed = sum(1 for r in self.test_results if r["success"])
-        total = len(self.test_results)
-        
-        print(f"✅ Passed: {passed}/{total}")
-        print(f"❌ Failed: {total - passed}/{total}")
-        
-        if total - passed > 0:
-            print("\n🔍 FAILED TESTS:")
-            for result in self.test_results:
-                if not result["success"]:
-                    print(f"  ❌ {result['test']}: {result['details']}")
-                    
-        return passed, total
-        
-    def cleanup(self):
-        """Clean up temporary files"""
-        import shutil
-        try:
-            shutil.rmtree(self.temp_dir)
-            print(f"🧹 Cleaned up temp directory: {self.temp_dir}")
-        except Exception as e:
-            print(f"⚠️  Failed to cleanup temp directory: {e}")
+    except Exception as e:
+        results["failed"].append(f"Health endpoint: Exception - {str(e)}")
+        log(f"FAILED health endpoint: {str(e)}", "ERROR")
 
 def main():
-    """Main test runner"""
-    tester = DuskyPDFTester()
-    try:
-        passed, total = tester.run_all_tests()
-        
-        if passed == total:
-            print(f"\n🎉 ALL TESTS PASSED! ({passed}/{total})")
-            return 0
-        else:
-            print(f"\n💥 SOME TESTS FAILED ({passed}/{total})")
-            return 1
-            
-    except KeyboardInterrupt:
-        print("\n⚠️  Tests interrupted by user")
-        return 1
-    except Exception as e:
-        print(f"\n💥 Test runner failed: {e}")
-        return 1
-    finally:
-        tester.cleanup()
+    log(f"Starting DuskyPDF Backend QA Round 2")
+    log(f"Backend URL: {BACKEND_URL}")
+    log(f"API Base: {API_BASE}")
+    log("=" * 60)
+    
+    # Test health endpoint first
+    test_health_endpoint()
+    
+    # Test SEO endpoints
+    test_seo_endpoints()
+    
+    # Generate test PDFs
+    pdf_5pages = generate_test_pdf(pages=5, with_text=True)
+    pdf_4pages = generate_test_pdf(pages=4, with_text=True)
+    pdf_with_image = generate_test_pdf(pages=1, with_text=True, with_image=True)
+    
+    # Test 1: remove-pages
+    test_tool(
+        "remove-pages",
+        [("test.pdf", pdf_5pages, "application/pdf")],
+        options={"pages": "2,4"},
+        expected_mime="application/pdf",
+        expected_ext=".pdf"
+    )
+    
+    # Test 2: extract-pages
+    test_tool(
+        "extract-pages",
+        [("test.pdf", pdf_5pages, "application/pdf")],
+        options={"pages": "1-2,5"},
+        expected_mime="application/pdf",
+        expected_ext=".pdf"
+    )
+    
+    # Test 3: n-up-pdf
+    test_tool(
+        "n-up-pdf",
+        [("test.pdf", pdf_4pages, "application/pdf")],
+        options={"n": 2},
+        expected_mime="application/pdf",
+        expected_ext=".pdf"
+    )
+    
+    # Test 4: grayscale-pdf
+    test_tool(
+        "grayscale-pdf",
+        [("test.pdf", pdf_5pages, "application/pdf")],
+        options={"dpi": 150},
+        expected_mime="application/pdf",
+        expected_ext=".pdf"
+    )
+    
+    # Test 5: pdf-info
+    test_tool(
+        "pdf-info",
+        [("test.pdf", pdf_5pages, "application/pdf")],
+        options={},
+        expected_mime="text/plain",
+        expected_ext=".txt"
+    )
+    
+    # Test 6: sign-pdf
+    test_tool(
+        "sign-pdf",
+        [("test.pdf", pdf_5pages, "application/pdf")],
+        options={"text": "John Doe", "position": "bottom-right"},
+        expected_mime="application/pdf",
+        expected_ext=".pdf"
+    )
+    
+    # Test 7: edit-pdf
+    test_tool(
+        "edit-pdf",
+        [("test.pdf", pdf_5pages, "application/pdf")],
+        options={"page": 1, "x": 10, "y": 10, "text": "Hello", "size": 18, "color": "#ff0000"},
+        expected_mime="application/pdf",
+        expected_ext=".pdf"
+    )
+    
+    # Test 8: pdf-to-text
+    test_tool(
+        "pdf-to-text",
+        [("test.pdf", pdf_5pages, "application/pdf")],
+        options={},
+        expected_mime="text/plain",
+        expected_ext=".txt"
+    )
+    
+    # Test 9: extract-images
+    test_tool(
+        "extract-images",
+        [("test.pdf", pdf_with_image, "application/pdf")],
+        options={},
+        expected_mime="application/zip",
+        expected_ext=".zip"
+    )
+    
+    # Test 10: text-to-pdf
+    txt_content = b"This is a test document.\n\nIt has multiple paragraphs.\n\nEach paragraph should be rendered correctly in the PDF output.\n\nThis is the final paragraph."
+    test_tool(
+        "text-to-pdf",
+        [("test.txt", txt_content, "text/plain")],
+        options={},
+        expected_mime="application/pdf",
+        expected_ext=".pdf"
+    )
+    
+    # Test 11: html-to-pdf
+    html_content = b"<html><body><h1>Hi</h1><p>Test</p></body></html>"
+    test_tool(
+        "html-to-pdf",
+        [("test.html", html_content, "text/html")],
+        options={},
+        expected_mime="application/pdf",
+        expected_ext=".pdf"
+    )
+    
+    # Print summary
+    log("=" * 60)
+    log(f"TESTING COMPLETE")
+    log(f"Total tests: {results['total']}")
+    log(f"Passed: {len(results['passed'])}")
+    log(f"Failed: {len(results['failed'])}")
+    log("=" * 60)
+    
+    if results["failed"]:
+        log("FAILED TESTS:", "ERROR")
+        for fail in results["failed"]:
+            log(f"  ❌ {fail}", "ERROR")
+    
+    if results["passed"]:
+        log("PASSED TESTS:", "SUCCESS")
+        for passed in results["passed"]:
+            log(f"  ✅ {passed}", "SUCCESS")
+    
+    # Exit with appropriate code
+    sys.exit(0 if len(results["failed"]) == 0 else 1)
 
 if __name__ == "__main__":
-    exit(main())
+    main()
